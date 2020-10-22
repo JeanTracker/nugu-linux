@@ -32,9 +32,11 @@ int main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
-    nugu_sample_manager->prepare();
+    bool test_sonar_cloud_run;
+
+        nugu_sample_manager->prepare();
     nugu_sdk_manager->setup();
-    nugu_sample_manager->runLoop();
+            nugu_sample_manager->runLoop();
 
     return EXIT_SUCCESS;
 }
