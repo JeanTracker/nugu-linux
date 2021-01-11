@@ -82,9 +82,11 @@ typedef struct _qnx_alsa_handle {
 	int samplebyte;
 	int channel;
 
+	int stop_action;
 	int stop;
 	int pause;
 	int done;
+	int init;
 
 	int is_start;
 	int is_first;
@@ -97,7 +99,6 @@ typedef struct _qnx_alsa_handle {
 
 static NuguPcmDriver *pcm_driver;
 
-#if 1
 static gboolean _playerEndOfStream(void *userdata)
 {
 	qnx_alsa_handle *handle = (qnx_alsa_handle *)userdata;
@@ -119,6 +120,7 @@ static gboolean _playerEndOfStream(void *userdata)
 
 	return FALSE;
 }
+
 static void *_pcm_write_thread(void *data)
 {
 	qnx_alsa_handle *handle = (qnx_alsa_handle *)data;
@@ -134,11 +136,16 @@ static void *_pcm_write_thread(void *data)
 	pthread_sigmask(SIG_BLOCK, &signals, NULL);
 
 	while (1) {
+		if (!handle->init)
+			break;
+
 		if (handle->stop) {
 			usleep(10 * 1000);
 			is_first = 1;
+			handle->stop_action = 1;
 			continue;
 		}
+		handle->stop_action = 0;
 
 		if (!handle->is_start || handle->pause || handle->done) {
 			usleep(10 * 1000);
@@ -154,10 +161,12 @@ static void *_pcm_write_thread(void *data)
 		memset(buf, SAMPLE_SILENCE, SAMPLE_SIZE);
 		buf_size = SAMPLE_SIZE;
 
-		// nugu_info("buffer data size check");
+#if 0
+		nugu_info("buffer data size check");
+#endif
 		if (nugu_pcm_get_data_size(handle->pcm) > 0) {
 			if (is_first) {
-				// nugu_info("%s:%d!!!", __func__, __LINE__);
+				nugu_info("%s:%d!!!", __func__, __LINE__);
 				nugu_prof_mark(
 					NUGU_PROF_TYPE_TTS_FIRST_PCM_WRITE);
 				is_first = 0;
@@ -166,8 +175,10 @@ static void *_pcm_write_thread(void *data)
 			buf_size =
 				nugu_pcm_get_data(handle->pcm, buf, buf_size);
 			handle->written += buf_size;
+#if 0
 			printf("bytes written = (%d/%d)\n", buf_size,
 			       (int)handle->written);
+#endif
 		} else if (nugu_pcm_receive_is_last_data(handle->pcm) &&
 			   !handle->done) {
 			nugu_info("done");
@@ -179,7 +190,6 @@ static void *_pcm_write_thread(void *data)
 			handle->done = 1;
 			continue;
 		}
-
 		usleep(handle->frag_period_us);
 
 		written =
@@ -187,8 +197,9 @@ static void *_pcm_write_thread(void *data)
 		written2 = 0;
 		if (written != buf_size) {
 			snd_pcm_channel_status_t status;
-
+#if 0
 			nugu_warn("retry to write %d", buf_size - (int)written);
+#endif
 			memset(&status, 0, sizeof(status));
 			status.channel = SND_PCM_CHANNEL_PLAYBACK;
 			if (snd_pcm_plugin_status(handle->pcm_handle, &status) <
@@ -281,15 +292,18 @@ static void *_pcm_write_thread(void *data)
 		if ((written + written2) < buf_size)
 			nugu_warn("write failed %d bytes",
 				  buf_size - (written + written2));
+#if 0
 		else
 			nugu_info("write done(%d/%d)!!", written + written2,
 				  buf_size);
+#endif
 	}
 
 	printf("thread is destroyed\n");
 
 	return NULL;
 }
+#if 0
 static void *_pcm_event_thread(void *data)
 {
 	qnx_alsa_handle *handle = (qnx_alsa_handle *)data;
@@ -304,7 +318,9 @@ static void *_pcm_event_thread(void *data)
 	pthread_sigmask(SIG_BLOCK, &signals, NULL);
 
 	while (1) {
-#if 0
+		if (!handle->init)
+			break;
+
 		if (handle->stop) {
 			usleep(10 * 1000);
 			continue;
@@ -314,9 +330,12 @@ static void *_pcm_event_thread(void *data)
 			usleep(10 * 1000);
 			continue;
 		}
-#endif
 		pcm_fd = snd_pcm_file_descriptor(handle->pcm_handle,
 						 SND_PCM_CHANNEL_PLAYBACK);
+		// if (pcm_fd < 0) {
+		// 	usleep(10 * 1000);
+		// 	continue;
+		// }
 
 		FD_ZERO(&ofds);
 		FD_SET(pcm_fd, &ofds);
@@ -357,18 +376,21 @@ static void *_pcm_event_thread(void *data)
 	return NULL;
 }
 #endif
+
 static int _pcm_create(NuguPcmDriver *driver, NuguPcm *pcm,
 		       NuguAudioProperty prop)
 {
 	qnx_alsa_handle *alsa_handle = g_malloc0(sizeof(qnx_alsa_handle));
 	alsa_handle->pcm = pcm;
+	alsa_handle->init = 1;
+	alsa_handle->stop_action = 0;
 
 	nugu_info("%s:%d!!!", __func__, __LINE__);
 	pthread_mutex_init(&alsa_handle->mutex, NULL);
 	pthread_create(&alsa_handle->write_thread, NULL, _pcm_write_thread,
 		       alsa_handle);
-	pthread_create(&alsa_handle->event_thread, NULL, _pcm_event_thread,
-		       alsa_handle);
+	// pthread_create(&alsa_handle->event_thread, NULL, _pcm_event_thread,
+	// 	       alsa_handle);
 
 	nugu_pcm_set_driver_data(pcm, alsa_handle);
 
@@ -378,6 +400,7 @@ static int _pcm_create(NuguPcmDriver *driver, NuguPcm *pcm,
 static void _pcm_destroy(NuguPcmDriver *driver, NuguPcm *pcm)
 {
 	qnx_alsa_handle *alsa_handle = nugu_pcm_get_driver_data(pcm);
+	void *retval;
 
 	nugu_info("%s:%d!!!", __func__, __LINE__);
 
@@ -385,6 +408,11 @@ static void _pcm_destroy(NuguPcmDriver *driver, NuguPcm *pcm)
 
 	if (alsa_handle == NULL)
 		return;
+
+	alsa_handle->init = 0;
+
+	pthread_join(alsa_handle->write_thread, &retval);
+	// pthread_join(alsa_handle->event_thread, &retval);
 
 	memset(alsa_handle, 0, sizeof(qnx_alsa_handle));
 	g_free(alsa_handle);
@@ -394,6 +422,13 @@ static void _pcm_destroy(NuguPcmDriver *driver, NuguPcm *pcm)
 static int _pcm_start(NuguPcmDriver *driver, NuguPcm *pcm)
 {
 	qnx_alsa_handle *alsa_handle = nugu_pcm_get_driver_data(pcm);
+	snd_pcm_filter_t pevent;
+	snd_pcm_channel_info_t pi;
+	snd_pcm_channel_setup_t setup;
+	snd_mixer_group_t group;
+	snd_pcm_channel_params_t pp;
+
+	int fragsize = SAMPLE_SIZE;
 	int rtn;
 
 	nugu_info("%s:%d!!!", __func__, __LINE__);
@@ -410,123 +445,106 @@ static int _pcm_start(NuguPcmDriver *driver, NuguPcm *pcm)
 		return 0;
 	}
 
-	{
-		snd_pcm_filter_t pevent;
-		snd_pcm_channel_info_t pi;
-		int rtn;
+	if ((rtn = snd_pcm_open_preferred(
+		     &alsa_handle->pcm_handle, &alsa_handle->card,
+		     &alsa_handle->device,
+		     (SND_PCM_OPEN_PLAYBACK | SND_PCM_OPEN_NONBLOCK))) < 0) {
+		fprintf(stderr, "snd_pcm_open_preferred failed - %s\n",
+			snd_strerror(rtn));
+		return -1;
+	}
 
-		int fragsize = SAMPLE_SIZE;
-
-		snd_pcm_channel_setup_t setup;
-		//useconds_t frag_period_us;
-		snd_mixer_group_t group;
-		snd_pcm_channel_params_t pp;
-
-		if ((rtn = snd_pcm_open_preferred(
-			     &alsa_handle->pcm_handle, &alsa_handle->card,
-			     &alsa_handle->device,
-			     (SND_PCM_OPEN_PLAYBACK | SND_PCM_OPEN_NONBLOCK))) <
-		    0) {
-			fprintf(stderr, "snd_pcm_open_preferred failed - %s\n",
-				snd_strerror(rtn));
-			return -1;
-		}
-
-		/* Enable PCM events */
-		pevent.enable =
-			SND_PCM_EVENT_MASK(SND_PCM_EVENT_AUDIOMGMT_STATUS) |
+	/* Enable PCM events */
+	pevent.enable = SND_PCM_EVENT_MASK(SND_PCM_EVENT_AUDIOMGMT_STATUS) |
 			SND_PCM_EVENT_MASK(SND_PCM_EVENT_AUDIOMGMT_MUTE) |
 			SND_PCM_EVENT_MASK(SND_PCM_EVENT_OUTPUTCLASS) |
 			SND_PCM_EVENT_MASK(SND_PCM_EVENT_UNDERRUN);
-		snd_pcm_set_filter(alsa_handle->pcm_handle,
-				   SND_PCM_CHANNEL_PLAYBACK, &pevent);
+	snd_pcm_set_filter(alsa_handle->pcm_handle, SND_PCM_CHANNEL_PLAYBACK,
+			   &pevent);
 
-		memset(&pi, 0, sizeof(pi));
-		pi.channel = SND_PCM_CHANNEL_PLAYBACK;
-		if ((rtn = snd_pcm_plugin_info(alsa_handle->pcm_handle, &pi)) <
-		    0) {
-			fprintf(stderr, "snd_pcm_plugin_info failed: %s\n",
+	memset(&pi, 0, sizeof(pi));
+	pi.channel = SND_PCM_CHANNEL_PLAYBACK;
+	if ((rtn = snd_pcm_plugin_info(alsa_handle->pcm_handle, &pi)) < 0) {
+		fprintf(stderr, "snd_pcm_plugin_info failed: %s\n",
+			snd_strerror(rtn));
+		//cleanup_and_exit(EXIT_FAILURE);
+		return -2;
+	}
+
+	memset(&pp, 0, sizeof(pp));
+
+	pp.mode = SND_PCM_MODE_BLOCK;
+	pp.channel = SND_PCM_CHANNEL_PLAYBACK;
+	// pp.start_mode = SND_PCM_START_DATA;
+	pp.start_mode = SND_PCM_START_FULL;
+	pp.stop_mode = SND_PCM_STOP_STOP;
+
+	nugu_info("pi.max_fragment_size: %d\n", pi.max_fragment_size);
+	pp.buf.block.frag_size = pi.max_fragment_size;
+	if (fragsize != -1) {
+		pp.buf.block.frag_size = fragsize;
+	}
+	pp.buf.block.frags_max = -1;
+	pp.buf.block.frags_buffered_max = 0;
+	pp.buf.block.frags_min = 1;
+
+	pp.format.interleave = 1;
+	pp.format.rate = 22050;
+	pp.format.voices = 1;
+	pp.format.format = SND_PCM_SFMT_S16_LE;
+	strcpy(pp.sw_mixer_subchn_name, "Wave playback channel");
+
+	if ((rtn = snd_pcm_plugin_set_src_method(alsa_handle->pcm_handle, 0)) !=
+	    0) {
+		fprintf(stderr, "Failed to apply rate_method 0, using %d\n",
+			rtn);
+	}
+
+	if ((rtn = snd_pcm_plugin_params(alsa_handle->pcm_handle, &pp)) < 0) {
+		fprintf(stderr,
+			"snd_pcm_plugin_params failed: %s, why_failed = %d\n",
+			snd_strerror(rtn), pp.why_failed);
+		//cleanup_and_exit(EXIT_FAILURE);
+		return -3;
+	}
+
+	memset(&setup, 0, sizeof(setup));
+	memset(&group, 0, sizeof(group));
+	setup.channel = SND_PCM_CHANNEL_PLAYBACK;
+	setup.mixer_gid = &group.gid;
+	if ((rtn = snd_pcm_plugin_setup(alsa_handle->pcm_handle, &setup)) < 0) {
+		fprintf(stderr, "snd_pcm_plugin_setup failed: %s\n",
+			snd_strerror(rtn));
+		//cleanup_and_exit(EXIT_FAILURE);
+		return -4;
+	}
+	printf("Format %s \n", snd_pcm_get_format_name(setup.format.format));
+	printf("Frag Size %d \n", setup.buf.block.frag_size);
+	printf("Total Frags %d \n", setup.buf.block.frags);
+	printf("Rate %d \n", setup.format.rate);
+	printf("Voices %d \n", setup.format.voices);
+	alsa_handle->frag_period_us =
+		(((int64_t)setup.buf.block.frag_size * 1000000) /
+		 (2 * 1 * 22050));
+	printf("FragSize: %d\n", setup.buf.block.frag_size);
+	printf("Frag Period is %d us\n", alsa_handle->frag_period_us);
+
+	if (group.gid.name[0] == 0) {
+		printf("Mixer Pcm Group [%s] Not Set \n", group.gid.name);
+	} else {
+		printf("Mixer Pcm Group [%s]\n", group.gid.name);
+		if ((rtn = snd_mixer_open(&alsa_handle->mixer_handle,
+					  alsa_handle->card,
+					  setup.mixer_device)) < 0) {
+			fprintf(stderr, "snd_mixer_open failed: %s\n",
 				snd_strerror(rtn));
 			//cleanup_and_exit(EXIT_FAILURE);
-			return -2;
-		}
-
-		memset(&pp, 0, sizeof(pp));
-
-		pp.mode = SND_PCM_MODE_BLOCK;
-		pp.channel = SND_PCM_CHANNEL_PLAYBACK;
-		pp.start_mode = SND_PCM_START_FULL;
-		pp.stop_mode = SND_PCM_STOP_STOP;
-
-		nugu_info("pi.max_fragment_size: %d\n", pi.max_fragment_size);
-		pp.buf.block.frag_size = pi.max_fragment_size;
-		if (fragsize != -1) {
-			pp.buf.block.frag_size = fragsize;
-		}
-		pp.buf.block.frags_max = -1;
-		pp.buf.block.frags_buffered_max = 0;
-		pp.buf.block.frags_min = 1;
-
-		pp.format.interleave = 1;
-		pp.format.rate = 22050;
-		pp.format.voices = 1;
-		pp.format.format = SND_PCM_SFMT_S16_LE;
-		strcpy(pp.sw_mixer_subchn_name, "Wave playback channel");
-
-		if ((rtn = snd_pcm_plugin_set_src_method(
-			     alsa_handle->pcm_handle, 0)) != 0) {
-			fprintf(stderr,
-				"Failed to apply rate_method 0, using %d\n",
-				rtn);
-		}
-
-		if ((rtn = snd_pcm_plugin_params(alsa_handle->pcm_handle,
-						 &pp)) < 0) {
-			fprintf(stderr,
-				"snd_pcm_plugin_params failed: %s, why_failed = %d\n",
-				snd_strerror(rtn), pp.why_failed);
-			//cleanup_and_exit(EXIT_FAILURE);
-			return -3;
-		}
-
-		memset(&setup, 0, sizeof(setup));
-		memset(&group, 0, sizeof(group));
-		setup.channel = SND_PCM_CHANNEL_PLAYBACK;
-		setup.mixer_gid = &group.gid;
-		if ((rtn = snd_pcm_plugin_setup(alsa_handle->pcm_handle,
-						&setup)) < 0) {
-			fprintf(stderr, "snd_pcm_plugin_setup failed: %s\n",
-				snd_strerror(rtn));
-			//cleanup_and_exit(EXIT_FAILURE);
-			return -4;
-		}
-		printf("Format %s \n",
-		       snd_pcm_get_format_name(setup.format.format));
-		printf("Frag Size %d \n", setup.buf.block.frag_size);
-		printf("Total Frags %d \n", setup.buf.block.frags);
-		printf("Rate %d \n", setup.format.rate);
-		printf("Voices %d \n", setup.format.voices);
-		alsa_handle->frag_period_us =
-			(((int64_t)setup.buf.block.frag_size * 1000000) /
-			 (2 * 1 * 22050));
-		printf("FragSize: %d\n", setup.buf.block.frag_size);
-		printf("Frag Period is %d us\n", alsa_handle->frag_period_us);
-
-		if (group.gid.name[0] == 0) {
-			printf("Mixer Pcm Group [%s] Not Set \n",
-			       group.gid.name);
-		} else {
-			printf("Mixer Pcm Group [%s]\n", group.gid.name);
-			if ((rtn = snd_mixer_open(&alsa_handle->mixer_handle,
-						  alsa_handle->card,
-						  setup.mixer_device)) < 0) {
-				fprintf(stderr, "snd_mixer_open failed: %s\n",
-					snd_strerror(rtn));
-				//cleanup_and_exit(EXIT_FAILURE);
-				return -5;
-			}
+			return -5;
 		}
 	}
+
+	snd_pcm_plugin_set_disable(alsa_handle->pcm_handle,
+				   PLUGIN_BUFFER_PARTIAL_BLOCKS);
 
 	if ((rtn = snd_pcm_plugin_prepare(alsa_handle->pcm_handle,
 					  SND_PCM_CHANNEL_PLAYBACK)) < 0) {
@@ -577,6 +595,19 @@ static int _pcm_stop(NuguPcmDriver *driver, NuguPcm *pcm)
 	alsa_handle->pause = 0;
 	alsa_handle->stop = 1;
 	alsa_handle->is_start = 0;
+
+	while (!alsa_handle->stop_action) {
+		nugu_info("wait...");
+		usleep(10*1000);
+	}
+
+	if (alsa_handle->mixer_handle)
+		snd_mixer_close (alsa_handle->mixer_handle);
+	alsa_handle->mixer_handle = NULL;
+
+	if (alsa_handle->pcm_handle)
+		snd_pcm_close (alsa_handle->pcm_handle);
+	alsa_handle->pcm_handle = NULL;
 
 	//pthread_mutex_unlock(&alsa_handle->mutex);
 
@@ -726,8 +757,6 @@ static int _pcm_push_data(NuguPcmDriver *driver, NuguPcm *pcm, const char *data,
 {
 	qnx_alsa_handle *alsa_handle = nugu_pcm_get_driver_data(pcm);
 	int playing_flag = 0;
-
-	nugu_info("%s:%d!!!", __func__, __LINE__);
 
 	g_return_val_if_fail(pcm != NULL, -1);
 

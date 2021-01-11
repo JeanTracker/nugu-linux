@@ -48,7 +48,7 @@
 #define SND_PCM_EVENT_OVERRUN 4
 #endif
 
-#define SAMPLE_SIZE 512*10
+#define SAMPLE_SIZE 5120
 //#define ENV_DUMP_PATH_RECORDER "/home/qnxuser/"
 
 typedef struct _qnx_alsa_handle {
@@ -164,22 +164,25 @@ static void *_rec_read_thread(void *data)
 		FD_ZERO(&rfds);
 		FD_ZERO(&ofds);
 
-		pcm_fd = snd_pcm_file_descriptor(pcm_handle,
+		pcm_fd = snd_pcm_file_descriptor(handle->pcm_handle,
 						 SND_PCM_CHANNEL_CAPTURE);
+		if (pcm_fd < 0) {
+			usleep(10 * 1000);
+			continue;
+		}
+
 		FD_SET(pcm_fd, &rfds);
 		FD_SET(pcm_fd, &ofds);
 
-		if (select (pcm_fd + 1, &rfds, NULL, &ofds, NULL) == -1)
-		{
+		if (select(pcm_fd + 1, &rfds, NULL, &ofds, NULL) == -1) {
 			perror("select");
 			break; /* break loop to exit cleanly */
 		}
 
-		if (FD_ISSET (pcm_fd, &ofds))
-		{
+		if (FD_ISSET(pcm_fd, &ofds)) {
 			nugu_info("read event");
 			if ((rtn = snd_pcm_channel_read_event(
-				     alsa_handle->pcm_handle,
+				     handle->pcm_handle,
 				     SND_PCM_CHANNEL_CAPTURE, &event)) == EOK) {
 				switch (event.type) {
 				case SND_PCM_EVENT_OVERRUN:
@@ -203,7 +206,6 @@ static void *_rec_read_thread(void *data)
 		memset(buf, 0, SAMPLE_SIZE);
 		read = snd_pcm_plugin_read(handle->pcm_handle, buf,
 					   SAMPLE_SIZE);
-		printf("=> read (%d/%d)\n", read, SAMPLE_SIZE);
 		nugu_recorder_push_frame(handle->rec, buf, read);
 
 #ifdef ENV_DUMP_PATH_RECORDER
@@ -298,9 +300,9 @@ static int _rec_start(NuguRecorderDriver *driver, NuguRecorder *rec,
 	pthread_create(&alsa_handle->read_thread, NULL, _rec_read_thread,
 		       alsa_handle);
 
-	if ((rtn = snd_pcm_open_preferred(&alsa_handle->pcm_handle, &alsa_handle->card,
-					  &alsa_handle->device,
-					  SND_PCM_OPEN_CAPTURE)) < 0) {
+	if ((rtn = snd_pcm_open_preferred(
+		     &alsa_handle->pcm_handle, &alsa_handle->card,
+		     &alsa_handle->device, SND_PCM_OPEN_CAPTURE)) < 0) {
 		fprintf(stderr, "snd_pcm_open_preferred failed - %s\n",
 			snd_strerror(rtn));
 		return -1;
@@ -309,7 +311,8 @@ static int _rec_start(NuguRecorderDriver *driver, NuguRecorder *rec,
 	/* Enable PCM events */
 	pevent.enable = (1 << SND_PCM_EVENT_OVERRUN) |
 			(1 << SND_PCM_EVENT_AUDIOMGMT_STATUS);
-	snd_pcm_set_filter(alsa_handle->pcm_handle, SND_PCM_CHANNEL_CAPTURE, &pevent);
+	snd_pcm_set_filter(alsa_handle->pcm_handle, SND_PCM_CHANNEL_CAPTURE,
+			   &pevent);
 
 	memset(&pi, 0, sizeof(pi));
 	pi.channel = SND_PCM_CHANNEL_CAPTURE;
@@ -369,8 +372,8 @@ static int _rec_start(NuguRecorderDriver *driver, NuguRecorder *rec,
 
 #if 1 // debug
 	map.map.channels = 32;
-	if ((rtn = snd_pcm_query_channel_map(alsa_handle->pcm_handle, &map.map)) ==
-	    EOK) {
+	if ((rtn = snd_pcm_query_channel_map(alsa_handle->pcm_handle,
+					     &map.map)) == EOK) {
 		int i, j;
 
 		printf("Channel map:");
@@ -421,8 +424,7 @@ static int _rec_start(NuguRecorderDriver *driver, NuguRecorder *rec,
 	pthread_mutex_unlock(&alsa_handle->mutex);
 
 #ifdef ENV_DUMP_PATH_RECORDER
-	alsa_handle->dump_fd =
-		_dumpfile_open(ENV_DUMP_PATH_RECORDER, "parec");
+	alsa_handle->dump_fd = _dumpfile_open(ENV_DUMP_PATH_RECORDER, "parec");
 #endif
 
 	nugu_recorder_set_driver_data(rec, alsa_handle);
