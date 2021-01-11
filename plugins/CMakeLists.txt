@@ -69,3 +69,20 @@ IF(ENABLE_GSTREAMER_PLUGIN)
 		ADD_DEPENDENCIES(${plugin} libnugu)
 	ENDFOREACH(plugin)
 ENDIF(ENABLE_GSTREAMER_PLUGIN)
+
+# QNX Alsa plugin
+pkg_check_modules(qnx_alsa REQUIRED alsa)
+SET(QNX_ALSA_PLUGINS
+	alsa_recorder
+	alsa_pcm
+	)
+
+FOREACH(plugin ${QNX_ALSA_PLUGINS})
+	ADD_LIBRARY(${plugin} SHARED ${plugin}.c)
+	TARGET_COMPILE_OPTIONS(${plugin} PRIVATE ${qnx_alsa_CFLAGS})
+	TARGET_LINK_LIBRARIES(${plugin} ${pkgs_LDFLAGS} ${qnx_alsa_LDFLAGS}
+		-L${CMAKE_BINARY_DIR}/src -lnugu)
+	SET_TARGET_PROPERTIES(${plugin} PROPERTIES PREFIX "" OUTPUT_NAME ${plugin})
+	INSTALL(TARGETS ${plugin} LIBRARY DESTINATION ${plugindir})
+	ADD_DEPENDENCIES(${plugin} libnugu)
+ENDFOREACH(plugin)

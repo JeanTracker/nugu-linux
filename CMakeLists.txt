@@ -27,7 +27,8 @@ SET(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # C++ standard: c++11 (not gnu++11)
 SET(CMAKE_CXX_STANDARD 11)
-SET(CMAKE_CXX_EXTENSIONS OFF)
+#SET(CMAKE_CXX_EXTENSIONS OFF)
+SET(CMAKE_CXX_EXTENSIONS ON)
 
 # C standard: gnu99 (not c99)
 SET(CMAKE_C_STANDARD 99)
@@ -246,6 +247,16 @@ INCLUDE_DIRECTORIES(
 	${CMAKE_SOURCE_DIR}/externals/jsoncpp/include
 	${CMAKE_SOURCE_DIR}/include)
 
+INCLUDE_DIRECTORIES(
+	/opt/qnx700/target/usr/include
+	/opt/qnx700/target/x86_64/usr/include/nugu-epd
+	/opt/qnx700/target/x86_64/usr/include/nugu-kwd
+)
+
+LINK_DIRECTORIES(
+	/opt/qnx700/target/usr/lib
+)
+
 # Install header files
 CONFIGURE_FILE(nugu.h.in ${CMAKE_SOURCE_DIR}/include/nugu.h @ONLY)
 INSTALL(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/nugu/)
@@ -271,4 +282,4 @@ ADD_SUBDIRECTORY(tests)
 ADD_SUBDIRECTORY(plugins)
 
 # Examples
-ADD_SUBDIRECTORY(examples)
+#ADD_SUBDIRECTORY(examples)
