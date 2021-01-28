@@ -27,7 +27,8 @@ SET(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # C++ standard: c++11 (not gnu++11)
 SET(CMAKE_CXX_STANDARD 11)
-SET(CMAKE_CXX_EXTENSIONS OFF)
+#SET(CMAKE_CXX_EXTENSIONS OFF)
+SET(CMAKE_CXX_EXTENSIONS ON)
 
 # C standard: gnu99 (not c99)
 SET(CMAKE_C_STANDARD 99)
@@ -103,7 +104,7 @@ ENDIF()
 
 # Set NUGU SDK library default dependency
 SET(DEFAULT_LIB_DEPENDENCY
-	glib-2.0 gio-2.0 gio-unix-2.0 gthread-2.0
+	glib-2.0 gio-2.0 gio-unix-2.0 #gthread-2.0
 	openssl
 	zlib)
 SET(FORCE_LIB_DEPENDENCY)
