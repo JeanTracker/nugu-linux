@@ -73,8 +73,6 @@ typedef struct _qnx_alsa_handle {
 	pthread_t write_thread;
 	pthread_t event_thread;
 	pthread_mutex_t mutex;
-	int card;
-	int device;
 
 	NuguPcm *pcm;
 
@@ -392,6 +390,15 @@ static void _pcm_destroy(NuguPcmDriver *driver, NuguPcm *pcm)
 static int _pcm_start(NuguPcmDriver *driver, NuguPcm *pcm)
 {
 	qnx_alsa_handle *alsa_handle = nugu_pcm_get_driver_data(pcm);
+	snd_pcm_filter_t pevent;
+	snd_pcm_channel_setup_t setup;
+	snd_mixer_group_t group;
+	snd_pcm_channel_params_t pp;
+	snd_pcm_channel_info_t pi;
+	int fragsize = SAMPLE_SIZE;
+	int card = -1, device = 0;
+	const char *env_card;
+	const char *env_device;
 	int rtn;
 
 	nugu_info("%s:%d!!!", __func__, __LINE__);
@@ -408,121 +415,116 @@ static int _pcm_start(NuguPcmDriver *driver, NuguPcm *pcm)
 		return 0;
 	}
 
-	{
-		snd_pcm_filter_t pevent;
-		snd_pcm_channel_info_t pi;
-		int rtn;
+	env_card = getenv("NUGU_QNX_PLAYBACK_CARD");
+	if (env_card)
+		card = atoi(env_card);
 
-		int fragsize = SAMPLE_SIZE;
+	env_device = getenv("NUGU_QNX_PLAYBACK_DEVICE");
+	if (env_device)
+		device = atoi(env_device);
 
-		snd_pcm_channel_setup_t setup;
-		//useconds_t frag_period_us;
-		snd_mixer_group_t group;
-		snd_pcm_channel_params_t pp;
-
-		if ((rtn = snd_pcm_open_preferred(
-			     &alsa_handle->pcm_handle, &alsa_handle->card,
-			     &alsa_handle->device,
-			     (SND_PCM_OPEN_PLAYBACK | SND_PCM_OPEN_NONBLOCK))) <
-		    0) {
+	if (card == -1) {
+		rtn = snd_pcm_open_preferred(
+			&alsa_handle->pcm_handle, &card, &device,
+			SND_PCM_OPEN_PLAYBACK | SND_PCM_OPEN_NONBLOCK);
+		if (rtn < 0) {
 			fprintf(stderr, "snd_pcm_open_preferred failed - %s\n",
 				snd_strerror(rtn));
 			return -1;
 		}
+	} else {
+		printf("QNX playback sound card:evice = [%d:%d]", card, device);
 
-		/* Enable PCM events */
-		pevent.enable =
-			SND_PCM_EVENT_MASK(SND_PCM_EVENT_AUDIOMGMT_STATUS) |
+		rtn = snd_pcm_open(&alsa_handle->pcm_handle, card, device,
+				   SND_PCM_OPEN_PLAYBACK |
+					   SND_PCM_OPEN_NONBLOCK);
+		if (rtn < 0) {
+			fprintf(stderr, "snd_pcm_open failed - %s\n",
+				snd_strerror(rtn));
+			return -2;
+		}
+	}
+
+	/* Enable PCM events */
+	pevent.enable = SND_PCM_EVENT_MASK(SND_PCM_EVENT_AUDIOMGMT_STATUS) |
 			SND_PCM_EVENT_MASK(SND_PCM_EVENT_AUDIOMGMT_MUTE) |
 			SND_PCM_EVENT_MASK(SND_PCM_EVENT_OUTPUTCLASS) |
 			SND_PCM_EVENT_MASK(SND_PCM_EVENT_UNDERRUN);
-		snd_pcm_set_filter(alsa_handle->pcm_handle,
-				   SND_PCM_CHANNEL_PLAYBACK, &pevent);
+	snd_pcm_set_filter(alsa_handle->pcm_handle, SND_PCM_CHANNEL_PLAYBACK,
+			   &pevent);
 
-		memset(&pi, 0, sizeof(pi));
-		pi.channel = SND_PCM_CHANNEL_PLAYBACK;
-		if ((rtn = snd_pcm_plugin_info(alsa_handle->pcm_handle, &pi)) <
-		    0) {
-			fprintf(stderr, "snd_pcm_plugin_info failed: %s\n",
+	memset(&pi, 0, sizeof(pi));
+	pi.channel = SND_PCM_CHANNEL_PLAYBACK;
+	if ((rtn = snd_pcm_plugin_info(alsa_handle->pcm_handle, &pi)) < 0) {
+		fprintf(stderr, "snd_pcm_plugin_info failed: %s\n",
+			snd_strerror(rtn));
+		return -3;
+	}
+
+	memset(&pp, 0, sizeof(pp));
+
+	pp.mode = SND_PCM_MODE_BLOCK;
+	pp.channel = SND_PCM_CHANNEL_PLAYBACK;
+	pp.start_mode = SND_PCM_START_FULL;
+	pp.stop_mode = SND_PCM_STOP_STOP;
+
+	nugu_info("pi.max_fragment_size: %d\n", pi.max_fragment_size);
+	pp.buf.block.frag_size = pi.max_fragment_size;
+	if (fragsize != -1) {
+		pp.buf.block.frag_size = fragsize;
+	}
+	pp.buf.block.frags_max = -1;
+	pp.buf.block.frags_buffered_max = 0;
+	pp.buf.block.frags_min = 1;
+
+	pp.format.interleave = 1;
+	pp.format.rate = 22050;
+	pp.format.voices = 1;
+	pp.format.format = SND_PCM_SFMT_S16_LE;
+	strcpy(pp.sw_mixer_subchn_name, "Wave playback channel");
+
+	if ((rtn = snd_pcm_plugin_set_src_method(alsa_handle->pcm_handle, 0)) !=
+	    0) {
+		fprintf(stderr, "Failed to apply rate_method 0, using %d\n",
+			rtn);
+	}
+
+	if ((rtn = snd_pcm_plugin_params(alsa_handle->pcm_handle, &pp)) < 0) {
+		fprintf(stderr,
+			"snd_pcm_plugin_params failed: %s, why_failed = %d\n",
+			snd_strerror(rtn), pp.why_failed);
+		return -4;
+	}
+
+	memset(&setup, 0, sizeof(setup));
+	memset(&group, 0, sizeof(group));
+	setup.channel = SND_PCM_CHANNEL_PLAYBACK;
+	setup.mixer_gid = &group.gid;
+	if ((rtn = snd_pcm_plugin_setup(alsa_handle->pcm_handle, &setup)) < 0) {
+		fprintf(stderr, "snd_pcm_plugin_setup failed: %s\n",
+			snd_strerror(rtn));
+		return -5;
+	}
+	printf("Format %s \n", snd_pcm_get_format_name(setup.format.format));
+	printf("Frag Size %d \n", setup.buf.block.frag_size);
+	printf("Total Frags %d \n", setup.buf.block.frags);
+	printf("Rate %d \n", setup.format.rate);
+	printf("Voices %d \n", setup.format.voices);
+	alsa_handle->frag_period_us =
+		(((int64_t)setup.buf.block.frag_size * 1000000) /
+		 (2 * 1 * 22050));
+	printf("FragSize: %d\n", setup.buf.block.frag_size);
+	printf("Frag Period is %d us\n", alsa_handle->frag_period_us);
+
+	if (group.gid.name[0] == 0) {
+		printf("Mixer Pcm Group [%s] Not Set \n", group.gid.name);
+	} else {
+		printf("Mixer Pcm Group [%s]\n", group.gid.name);
+		if ((rtn = snd_mixer_open(&alsa_handle->mixer_handle, card,
+					  setup.mixer_device)) < 0) {
+			fprintf(stderr, "snd_mixer_open failed: %s\n",
 				snd_strerror(rtn));
-			//cleanup_and_exit(EXIT_FAILURE);
-			return -2;
-		}
-
-		memset(&pp, 0, sizeof(pp));
-
-		pp.mode = SND_PCM_MODE_BLOCK;
-		pp.channel = SND_PCM_CHANNEL_PLAYBACK;
-		pp.start_mode = SND_PCM_START_FULL;
-		pp.stop_mode = SND_PCM_STOP_STOP;
-
-		nugu_info("pi.max_fragment_size: %d\n", pi.max_fragment_size);
-		pp.buf.block.frag_size = pi.max_fragment_size;
-		if (fragsize != -1) {
-			pp.buf.block.frag_size = fragsize;
-		}
-		pp.buf.block.frags_max = -1;
-		pp.buf.block.frags_buffered_max = 0;
-		pp.buf.block.frags_min = 1;
-
-		pp.format.interleave = 1;
-		pp.format.rate = 22050;
-		pp.format.voices = 1;
-		pp.format.format = SND_PCM_SFMT_S16_LE;
-		strcpy(pp.sw_mixer_subchn_name, "Wave playback channel");
-
-		if ((rtn = snd_pcm_plugin_set_src_method(
-			     alsa_handle->pcm_handle, 0)) != 0) {
-			fprintf(stderr,
-				"Failed to apply rate_method 0, using %d\n",
-				rtn);
-		}
-
-		if ((rtn = snd_pcm_plugin_params(alsa_handle->pcm_handle,
-						 &pp)) < 0) {
-			fprintf(stderr,
-				"snd_pcm_plugin_params failed: %s, why_failed = %d\n",
-				snd_strerror(rtn), pp.why_failed);
-			//cleanup_and_exit(EXIT_FAILURE);
-			return -3;
-		}
-
-		memset(&setup, 0, sizeof(setup));
-		memset(&group, 0, sizeof(group));
-		setup.channel = SND_PCM_CHANNEL_PLAYBACK;
-		setup.mixer_gid = &group.gid;
-		if ((rtn = snd_pcm_plugin_setup(alsa_handle->pcm_handle,
-						&setup)) < 0) {
-			fprintf(stderr, "snd_pcm_plugin_setup failed: %s\n",
-				snd_strerror(rtn));
-			//cleanup_and_exit(EXIT_FAILURE);
-			return -4;
-		}
-		printf("Format %s \n",
-		       snd_pcm_get_format_name(setup.format.format));
-		printf("Frag Size %d \n", setup.buf.block.frag_size);
-		printf("Total Frags %d \n", setup.buf.block.frags);
-		printf("Rate %d \n", setup.format.rate);
-		printf("Voices %d \n", setup.format.voices);
-		alsa_handle->frag_period_us =
-			(((int64_t)setup.buf.block.frag_size * 1000000) /
-			 (2 * 1 * 22050));
-		printf("FragSize: %d\n", setup.buf.block.frag_size);
-		printf("Frag Period is %d us\n", alsa_handle->frag_period_us);
-
-		if (group.gid.name[0] == 0) {
-			printf("Mixer Pcm Group [%s] Not Set \n",
-			       group.gid.name);
-		} else {
-			printf("Mixer Pcm Group [%s]\n", group.gid.name);
-			if ((rtn = snd_mixer_open(&alsa_handle->mixer_handle,
-						  alsa_handle->card,
-						  setup.mixer_device)) < 0) {
-				fprintf(stderr, "snd_mixer_open failed: %s\n",
-					snd_strerror(rtn));
-				//cleanup_and_exit(EXIT_FAILURE);
-				return -5;
-			}
+			return -6;
 		}
 	}
 
@@ -530,7 +532,7 @@ static int _pcm_start(NuguPcmDriver *driver, NuguPcm *pcm)
 					  SND_PCM_CHANNEL_PLAYBACK)) < 0) {
 		fprintf(stderr, "snd_pcm_plugin_prepare failed: %s\n",
 			snd_strerror(rtn));
-		return -2;
+		return -7;
 	}
 
 	nugu_pcm_emit_status(pcm, NUGU_MEDIA_STATUS_READY);

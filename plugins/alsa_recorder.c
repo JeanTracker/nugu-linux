@@ -64,8 +64,6 @@ typedef struct _qnx_alsa_handle {
 
 	int start;
 	int stop;
-	int card;
-	int device;
 
 #if defined(ENV_DUMP_PATH_RECORDER)
 	int dump_fd;
@@ -252,6 +250,9 @@ static int _rec_start(NuguRecorderDriver *driver, NuguRecorder *rec,
 	snd_pcm_voice_conversion_t voice_conversion;
 	int rate_method = 0;
 	int fragsize = SAMPLE_SIZE;
+	int card = -1, device = 0;
+	const char *env_card;
+	const char *env_device;
 	int rtn;
 	struct {
 		snd_pcm_chmap_t map;
@@ -273,12 +274,32 @@ static int _rec_start(NuguRecorderDriver *driver, NuguRecorder *rec,
 	pthread_create(&alsa_handle->read_thread, NULL, _rec_read_thread,
 		       alsa_handle);
 
-	if ((rtn = snd_pcm_open_preferred(&alsa_handle->pcm_handle, &alsa_handle->card,
-					  &alsa_handle->device,
-					  SND_PCM_OPEN_CAPTURE)) < 0) {
-		fprintf(stderr, "snd_pcm_open_preferred failed - %s\n",
-			snd_strerror(rtn));
-		return -1;
+	env_card = getenv("NUGU_QNX_CAPTURE_CARD");
+	if (env_card)
+		card = atoi(env_card);
+
+	env_device = getenv("NUGU_QNX_CAPTURE_DEVICE");
+	if (env_device)
+		device = atoi(env_device);
+
+	if (card == -1) {
+		rtn = snd_pcm_open_preferred(&alsa_handle->pcm_handle, &card,
+					     &device, SND_PCM_OPEN_CAPTURE);
+		if (rtn < 0) {
+			fprintf(stderr, "snd_pcm_open_preferred failed - %s\n",
+				snd_strerror(rtn));
+			return -1;
+		}
+	} else {
+		printf("QNX capture sound card:evice = [%d:%d]", card, device);
+
+		rtn = snd_pcm_open(&alsa_handle->pcm_handle, card, device,
+				   SND_PCM_OPEN_CAPTURE);
+		if (rtn < 0) {
+			fprintf(stderr, "snd_pcm_open failed - %s\n",
+				snd_strerror(rtn));
+			return -2;
+		}
 	}
 
 	/* Enable PCM events */
@@ -291,8 +312,7 @@ static int _rec_start(NuguRecorderDriver *driver, NuguRecorder *rec,
 	if ((rtn = snd_pcm_plugin_info(alsa_handle->pcm_handle, &pi)) < 0) {
 		fprintf(stderr, "snd_pcm_plugin_info failed: %s\n",
 			snd_strerror(rtn));
-		//cleanup_and_exit(EXIT_FAILURE);
-		return -2;
+		return -3;
 	}
 
 	memset(&pp, 0, sizeof(pp));
@@ -317,14 +337,13 @@ static int _rec_start(NuguRecorderDriver *driver, NuguRecorder *rec,
 						 rate_method)) != rate_method) {
 		fprintf(stderr, "Failed to apply rate_method %d, using %d\n",
 			rate_method, rtn);
-		return -3;
+		return -4;
 	}
 
 	if ((rtn = snd_pcm_plugin_params(alsa_handle->pcm_handle, &pp)) < 0) {
 		fprintf(stderr, "snd_pcm_plugin_params failed: %s - %s\n",
 			snd_strerror(rtn), why_failed(pp.why_failed));
-		//cleanup_and_exit(EXIT_FAILURE);
-		return -4;
+		return -5;
 	}
 
 	memset(&setup, 0, sizeof(setup));
@@ -334,8 +353,7 @@ static int _rec_start(NuguRecorderDriver *driver, NuguRecorder *rec,
 	if ((rtn = snd_pcm_plugin_setup(alsa_handle->pcm_handle, &setup)) < 0) {
 		fprintf(stderr, "snd_pcm_plugin_setup failed: %s\n",
 			snd_strerror(rtn));
-		//cleanup_and_exit(EXIT_FAILURE);
-		return -5;
+		return -6;
 	}
 	printf("Format %s \n", snd_pcm_get_format_name(setup.format.format));
 	printf("Frag Size %d \n", setup.buf.block.frag_size);
@@ -385,8 +403,7 @@ static int _rec_start(NuguRecorderDriver *driver, NuguRecorder *rec,
 					  SND_PCM_CHANNEL_CAPTURE)) < 0) {
 		fprintf(stderr, "snd_pcm_plugin_prepare failed: %s\n",
 			snd_strerror(rtn));
-		//cleanup_and_exit(EXIT_FAILURE);
-		return -6;
+		return -7;
 	}
 
 	pthread_mutex_lock(&alsa_handle->mutex);
