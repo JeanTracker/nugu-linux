@@ -199,8 +199,8 @@ void PhoneCallAgent::makeCallSucceeded(const std::string& payload)
         return;
     }
 
-    if (cur_state != PhoneCallState::OUTGOING) {
-        nugu_warn("The current state is not PhoneCallState::OUTGOING");
+    if (cur_state != PhoneCallState::IDLE && cur_state != PhoneCallState::OUTGOING) {
+        nugu_warn("The current state is not PhoneCallState::IDLE or PhoneCallState::OUTGOING");
         return;
     }
 
