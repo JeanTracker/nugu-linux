@@ -36,10 +36,13 @@ class NuguRunnerPrivate {
 public:
     NuguRunnerPrivate()
         : done(0)
+        , src_id(0)
     {
     }
     ~NuguRunnerPrivate()
     {
+        std::lock_guard<std::mutex> guard(m);
+
         tag_vector.clear();
         type_map.clear();
         method_map.clear();
@@ -57,6 +60,7 @@ public:
     std::condition_variable cv;
     static int unique;
     int done;
+    guint src_id;
 };
 
 int NuguRunnerPrivate::unique = 0;
@@ -72,21 +76,25 @@ gboolean NuguRunnerPrivate::method_dispatch_cb(void* userdata)
         return FALSE;
     }
 
-    std::string tag = d->tag_vector.front();
-    if (d->method_map.find(tag) != d->method_map.end()) {
+    std::lock_guard<std::mutex> guard(d->m);
+
+    for (const auto& tag : d->tag_vector) {
         nugu_info("[Method: %s] will execute", tag.c_str());
         if (d->method_map[tag])
             d->method_map[tag]();
 
         ExecuteType type = d->type_map[tag];
-        d->remove_method(tag);
-
         if (type == ExecuteType::Blocking) {
             d->done = 1;
             nugu_info("[Method: %s] release blocking", tag.c_str());
             d->cv.notify_one();
         }
     }
+
+    d->tag_vector.clear();
+    d->method_map.clear();
+    d->type_map.clear();
+    d->src_id = 0;
 
     return FALSE;
 }
@@ -106,8 +114,6 @@ void NuguRunnerPrivate::add_method(const std::string& tag, NuguRunner::request_m
 
 void NuguRunnerPrivate::remove_method(const std::string& tag)
 {
-    std::lock_guard<std::mutex> guard(m);
-
     nugu_info("[Method: %s] is removed", tag.c_str());
 
     auto tag_iter = std::find(tag_vector.begin(), tag_vector.end(), tag);
@@ -135,11 +141,16 @@ NuguRunner::~NuguRunner()
     if (private_iter != d->private_map.end())
         d->private_map.erase(private_iter);
 
+    if (d->src_id > 0)
+        g_source_remove(d->src_id);
+
     delete d;
 }
 
 bool NuguRunner::invokeMethod(const std::string& tag, request_method method, ExecuteType type)
 {
+    std::string unique_tag;
+
     if (type != ExecuteType::Queued) {
         if (g_main_context_is_owner(g_main_context_default()) == TRUE) {
             nugu_info("[Method: %s] is executed immediately", tag.c_str());
@@ -149,12 +160,15 @@ bool NuguRunner::invokeMethod(const std::string& tag, request_method method, Exe
         }
     }
 
-    std::string unique_tag = tag + std::to_string(d->unique++);
-
+    d->m.lock();
+    unique_tag = tag + std::to_string(d->unique++);
     d->add_method(unique_tag, std::move(method), type);
 
-    g_idle_add(d->method_dispatch_cb, (void*)this);
+    if (!d->src_id)
+        d->src_id = g_idle_add(d->method_dispatch_cb, (void*)this);
+
     d->done = 0;
+    d->m.unlock();
 
     if (type == ExecuteType::Blocking) {
         std::mutex mtx;
